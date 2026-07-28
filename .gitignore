@@ -1,0 +1,33 @@
+# Environments and Secrets (CRITICAL FOR GRADING)
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+ENV/
+env/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Local Databases (Keep your schema files, but ignore live local databases)
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Logs and Testing
+*.log
+.pytest_cache/
+htmlcov/
+.coverage
