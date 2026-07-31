@@ -224,7 +224,6 @@ async def publish_ad_creative(ad_id: int, ctx: Context) -> dict:
 
 
 from pathlib import Path
-from server import mcp  
 
 BASE_DIR = Path(__file__).resolve().parent
 
