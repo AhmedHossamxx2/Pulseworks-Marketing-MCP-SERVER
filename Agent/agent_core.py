@@ -3,83 +3,39 @@ import sys
 import traceback
 from typing import Any, Dict, List, Optional
 
-from langchain_core.messages import BaseMessage
-from langchain_core.tools import tool
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_mcp_adapters.client import MultiServerMCPClient
 
 # Fix imports when running standalone
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from utils.config import config
 from utils.llm import create_llm
-
-# Base MCP Tools
-from mcp_server.tools import pull_audience_demographics
-from mcp_server.tools import analyze_ad_performance_and_recommend
-
 
 # ======================================================
 # 1. SYSTEM PROMPT
 # ======================================================
 
 SYSTEM_PROMPT = """
-You are an expert AI Marketing & Analytics Assistant integrated with MCP tools.
+You are an expert AI Marketing & Analytics Assistant integrated with Pulseworks MCP tools.
 
 Capabilities:
-1. Audience Demographics
-2. Campaign Performance Analysis
+1. Audience Demographics (Progress Tracking)
+2. Campaign Performance Analysis (Sampling / Recommendations)
+3. Budget Updates (Role Authorization)
 
 Rules:
 - ALWAYS use tools for real data.
-- NEVER fabricate metrics.
+- NEVER fabricate metrics or campaign states.
 - Summarize tool outputs clearly.
-- If tool returns an error, show it to the user.
-- Do NOT generate fake campaign data.
+- If tool returns an error (e.g., unauthorized or rejected), show it to the user.
 - Always rely on tool output.
 If the user asks about progress, status, or tracking of data retrieval,
 you MUST use the tool pull_audience_demographics.
 """
 
-
 # ======================================================
-# 2. TOOL INJECTION (WITH / WITHOUT MCP CONTEXT)
-# ======================================================
-
-def get_injected_tools(ctx: Optional[Any] = None) -> List[Any]:
-    """
-    Returns tools, optionally wrapped with MCP context.
-    """
-
-    if ctx is None:
-        return [
-            pull_audience_demographics,
-            analyze_ad_performance_and_recommend
-        ]
-
-    # --- MCP Wrapped Tools ---
-    @tool("pull_audience_demographics")
-    async def pull_audience_demographics_mcp(segment_id: str, sample_size: int = 1000):
-        """Fetches audience demographic data."""
-        return await pull_audience_demographics.ainvoke({
-            "segment_id": segment_id,
-            "sample_size": sample_size,
-            "ctx": ctx
-        })
-
-    @tool("analyze_ad_performance_and_recommend")
-    async def analyze_ad_performance_and_recommend_mcp(campaign_id: str):
-        """Analyzes campaign performance and returns recommendations."""
-        return await analyze_ad_performance_and_recommend.ainvoke({
-            "campaign_id": campaign_id,
-            "ctx": ctx
-        })
-
-    return [
-        pull_audience_demographics_mcp,
-        analyze_ad_performance_and_recommend_mcp
-    ]
-
-
-# ======================================================
-# 3. MAIN AGENT FUNCTION
+# 2. MAIN AGENT FUNCTION (MCP PROTOCOL COMPLIANT)
 # ======================================================
 
 async def run_agent_query(
@@ -89,93 +45,93 @@ async def run_agent_query(
 ) -> Dict[str, Any]:
     """
     Main agent execution function.
+    Connects to the FastMCP server via standard MCP transport wire.
     """
-
     try:
-        llm = create_llm()
-        tools = get_injected_tools(ctx)
+        # Determine command args for launching the server process
+        server_args = config.MCP_SERVER_COMMAND.split()
+        command = server_args[0]
+        args = server_args[1:] if len(server_args) > 1 else []
 
-        # Bind tools to model (modern approach)
-        llm_with_tools = llm.bind_tools(tools)
+        # ------------------------------------------------------
+        # LAYER 1: Establish Real MCP Client Connection
+        # ------------------------------------------------------
+        async with MultiServerMCPClient({
+            "pulseworks_server": {
+                "command": command,
+                "args": args,
+                "transport": config.MCP_TRANSPORT_TYPE
+            }
+        }) as mcp_client:
 
-        # Build initial messages
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+            # ------------------------------------------------------
+            # LAYER 2: Dynamic Tool Discovery 
+            # ------------------------------------------------------
+            tools = mcp_client.get_tools()
+            llm = create_llm()
+            llm_with_tools = llm.bind_tools(tools)
 
-        if chat_history:
-            for m in chat_history:
-                messages.append({
-                    "role": m.type,
-                    "content": m.content
-                })
+            # Build initial messages
+            messages = [SystemMessage(content=SYSTEM_PROMPT)]
+            if chat_history:
+                messages.extend(chat_history)
+            
+            messages.append(HumanMessage(content=user_input))
+            intermediate_steps = []
 
-        messages.append({"role": "user", "content": user_input})
+            # ------------------------------------------------------
+            # LAYER 3: Tool Execution Loop (Max 5 Iterations)
+            # ------------------------------------------------------
+            for _ in range(5): 
+                response = await llm_with_tools.ainvoke(messages)
 
-        intermediate_steps = []
+                # If there are no tool calls, the LLM has its final answer
+                if not getattr(response, "tool_calls", None):
+                    return {
+                        "status": "success",
+                        "output": response.content,
+                        "intermediate_steps": intermediate_steps,
+                    }
 
-        # ======================================================
-        # 4. TOOL LOOP (CRITICAL)
-        # ======================================================
+                # Add the LLM's tool call request to the message history
+                messages.append(response)
 
-        for _ in range(5):  # prevent infinite loops
-            response = await llm_with_tools.ainvoke(messages)
+                tool_map = {t.name: t for t in tools}
 
-            # لو مفيش tool calls → خلاص
-            if not getattr(response, "tool_calls", None):
-                final_output = response.content
-                return {
-                    "status": "success",
-                    "output": final_output,
-                    "intermediate_steps": intermediate_steps,
-                }
+                # Execute requested tools
+                for tool_call in response.tool_calls:
+                    tool_name = tool_call["name"]
+                    tool_args = tool_call["args"]
 
-            # لو فيه tool calls
-            tool_map = {getattr(t, "name", getattr(t, "__name__", str(t))): t for t in tools}
+                    if tool_name not in tool_map:
+                        messages.append(ToolMessage(
+                            tool_call_id=tool_call["id"],
+                            content=f"Error: Tool {tool_name} not found on the MCP server."
+                        ))
+                        continue
 
-            for tool_call in response.tool_calls:
-                tool_name = tool_call["name"]
-                tool_args = tool_call["args"]
-
-                if tool_name not in tool_map:
-                    continue
-
-                # Execute tool
-                tool_func = tool_map[tool_name]
-
-# التحقق مما إذا كانت الأداة تدعم ainvoke أو استدعاؤها كدالة بايثون عادية
-                if hasattr(tool_func, "ainvoke"):
+                    # Execute tool via MCP Adapter
+                    tool_func = tool_map[tool_name]
                     tool_result = await tool_func.ainvoke(tool_args)
-                else:
-                    if isinstance(tool_args, dict):
-                        tool_result = await tool_func(**tool_args)
-                    else:
-                        tool_result = await tool_func(tool_args)
 
-                intermediate_steps.append({
-                    "tool": tool_name,
-                    "args": tool_args,
-                    "result": tool_result
-                })
+                    intermediate_steps.append({
+                        "tool": tool_name,
+                        "args": tool_args,
+                        "result": tool_result
+                    })
 
-                # Append assistant tool call
-                messages.append({
-                    "role": "assistant",
-                     "content": "",
-                    "tool_calls": [tool_call]
-                })
+                    # Append tool result to context so LLM can read it
+                    messages.append(ToolMessage(
+                        tool_call_id=tool_call["id"],
+                        content=str(tool_result)
+                    ))
 
-                # Append tool result
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call["id"],
-                    "content": str(tool_result)
-                })
-
-        # لو وصلنا هنا → loop خلص بدون رد نهائي
-        return {
-            "status": "error",
-            "output": "Agent stopped after max tool iterations.",
-            "intermediate_steps": intermediate_steps,
-        }
+            # If loop exhausted without final output
+            return {
+                "status": "error",
+                "output": "Agent stopped after max tool iterations.",
+                "intermediate_steps": intermediate_steps,
+            }
 
     except Exception as e:
         return {

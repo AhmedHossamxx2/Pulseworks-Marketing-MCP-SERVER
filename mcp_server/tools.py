@@ -3,8 +3,9 @@ import asyncio
 
 from fastmcp import FastMCP, Context
 
-from .validation import validate_budget_update_payload
-from .database import get_db
+# ✅ FIXED LINES 6-7:
+from validation import validate_budget_update_payload
+from database import get_db
 
 
 logger = logging.getLogger("PulseworksMCPServer")
