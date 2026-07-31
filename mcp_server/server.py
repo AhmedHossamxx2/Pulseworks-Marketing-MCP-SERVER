@@ -2,7 +2,7 @@ import logging
 from typing import Dict, Any, Optional
 from fastmcp import FastMCP, Context
 
-# Configure logging
+# Configure structured logging for audit and protocol tracking
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("PulseworksMCPServer")
 
@@ -25,35 +25,78 @@ session_state: Dict[str, Any] = {
     "campaign_id": 1,               # Q3 B2B Lead Gen
     "emp_role_in_campaign": "Viewer" # Baseline role in seed.sql: Viewer
 }
+# Active session capability store
+client_capabilities_store: Dict[str, Any] = {}
 
 
 def get_declared_server_capabilities() -> Dict[str, Any]:
     """
-    Exposes declared server capabilities exchanged during initialization handshake.
+    Returns the declared server capabilities exchanged during the initialize payload.
+    Exposes capabilities for tools, resources, prompts, elicitation, and sampling.
     """
     return {
-        "tools": {"listChanged": True},
-        "resources": {"subscribe": False, "listChanged": True},
-        "prompts": {"listChanged": True},
-        "elicitation": {"supported": True},
-        "sampling": {"supported": True},
+        "tools": {
+            "listChanged": True  # Server supports dynamic tool notification updates
+        },
+        "resources": {
+            "subscribe": False,
+            "listChanged": True
+        },
+        "prompts": {
+            "listChanged": True
+        },
+        "experimental": {
+            "elicitation": True  # Human-in-the-loop elicitation feature flag
+        },
+        "sampling": {},  # Server capable of triggering LLM sampling calls via client
         "logging": {}
     }
 
 
 def check_client_capability(ctx: Optional[Context], capability_name: str) -> bool:
     """
-    Safely inspects whether the connected MCP client declared support for a feature.
+    Safely inspects whether the connected client declared support for a feature
+    (e.g., 'elicitation', 'sampling') during initialization.
+    
+    If the client does NOT support the capability, returns False so write tools
+    can gracefully fallback to read-only behavior.
     """
     if not ctx:
+        logger.warning("No request context. Defaulting capability '%s' to UNSUPPORTED.", capability_name)
         return False
+
     client_caps = getattr(ctx.session, "client_capabilities", {}) if hasattr(ctx, "session") else {}
-    return bool(client_caps.get(capability_name, False))
+    has_cap = client_caps.get(capability_name, False) or client_capabilities_store.get(capability_name, False)
+    
+    logger.info("Evaluated client capability '%s': %s", capability_name, has_cap)
+    return bool(has_cap)
 
 
 # ------------------------------------------------------------------------------
-# 2. Dynamic Notifications Implementation (Issue #4)
+# 2. Dynamic Notifications & Protocol Demonstration Tools
 # ------------------------------------------------------------------------------
+
+@mcp.tool(
+    name="check_system_capabilities",
+    description="Inspects active protocol capability negotiation status between client and server."
+)
+async def check_system_capabilities(ctx: Context) -> dict:
+    """
+    Diagnostic tool to verify client/server capability negotiation status (Issue #3).
+    """
+    server_caps = get_declared_server_capabilities()
+    client_supports_elicitation = check_client_capability(ctx, "elicitation")
+    client_supports_sampling = check_client_capability(ctx, "sampling")
+    
+    return {
+        "status": "Negotiation Active",
+        "server_capabilities": server_caps,
+        "client_capabilities_evaluated": {
+            "elicitation": client_supports_elicitation,
+            "sampling": client_supports_sampling
+        }
+    }
+
 
 @mcp.tool(
     name="authenticate_campaign_role",
@@ -61,7 +104,7 @@ def check_client_capability(ctx: Optional[Context], capability_name: str) -> boo
 )
 async def authenticate_campaign_role(employee_id: int, campaign_id: int, new_role: str, ctx: Context) -> dict:
     """
-    GENUINE RUNTIME NOTIFICATION TRIGGER:
+    GENUINE RUNTIME NOTIFICATION TRIGGER (Issue #4):
     Updates the session role for an employee on a given campaign (e.g., upgrading from 'Viewer' to 'Director').
     Pushes `notifications/tools/list_changed` to the client so the client immediately re-fetches tools.
     """
@@ -113,7 +156,7 @@ async def authenticate_campaign_role(employee_id: int, campaign_id: int, new_rol
 )
 async def get_campaign_summary(campaign_id: int) -> dict:
     """
-    Safe read-only query matching Campaign and Budgets seed data.
+    Safe read-only query matching Campaign and Budgets seed data (Issue #4).
     """
     return {
         "campaign_id": campaign_id,
@@ -131,7 +174,7 @@ async def get_campaign_summary(campaign_id: int) -> dict:
 )
 async def update_campaign_budget(campaign_id: int, new_daily_limit: float, ctx: Context) -> dict:
     """
-    High-stakes write tool with handler-level authorization check.
+    High-stakes write tool with handler-level authorization check (Issue #4).
     Fails if session active role is 'Viewer'.
     """
     current_role = session_state["emp_role_in_campaign"]
@@ -148,6 +191,35 @@ async def update_campaign_budget(campaign_id: int, new_daily_limit: float, ctx: 
         "campaign_id": campaign_id,
         "new_daily_limit": new_daily_limit,
         "updated_by_role": current_role
+    }
+
+
+@mcp.tool(
+    name="publish_ad_creative",
+    description="Publishes an ad creative. Performs capability check for elicitation: falls back to draft mode if missing."
+)
+async def publish_ad_creative(ad_id: int, ctx: Context) -> dict:
+    """
+    Demonstrates GRACEFUL FALLBACK (Issue #3):
+    - If client supports 'elicitation': proceeds to interactive sign-off flow.
+    - If client is restricted (no 'elicitation'): gracefully degrades to draft preview mode.
+    """
+    can_elicit = check_client_capability(ctx, "elicitation")
+
+    if not can_elicit:
+        logger.warning("Client lacks 'elicitation' capability. Downgrading to Read-Only Fallback.")
+        return {
+            "status": "FALLBACK_READ_ONLY",
+            "ad_id": ad_id,
+            "message": "Connected client does not support human elicitation. Ad status kept in draft mode.",
+            "mode": "read_only"
+        }
+
+    return {
+        "status": "PROCEED_TO_ELICITATION",
+        "ad_id": ad_id,
+        "message": "Client capability verified. Ready for human-in-the-loop approval.",
+        "mode": "interactive"
     }
 
 
