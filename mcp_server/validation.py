@@ -1,6 +1,5 @@
-from jsonschema import validate, ValidationError
+import jsonschema
 
-# Strict JSON Schema for budget update requests
 BUDGET_UPDATE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -18,17 +17,16 @@ BUDGET_UPDATE_SCHEMA = {
             "enum": ["USD", "EUR", "GBP"]
         }
     },
-    "required": ["campaign_id", "new_daily_limit", "currency"],
-    "additionalProperties": False
+    "required": ["campaign_id", "new_daily_limit"],
+    "additionalProperties": False  # Blocks unexpected extra fields
 }
 
 def validate_budget_update_payload(payload: dict) -> tuple[bool, str]:
-    """
-    Validates tool execution parameters against strict schema guardrails.
-    Returns (True, "") if valid, or (False, error_message) if invalid.
-    """
+    """Validates payload against BUDGET_UPDATE_SCHEMA."""
     try:
-        validate(instance=payload, schema=BUDGET_UPDATE_SCHEMA)
+        jsonschema.validate(instance=payload, schema=BUDGET_UPDATE_SCHEMA)
         return True, ""
-    except ValidationError as err:
-        return False, f"Defensive Validation Error: {err.message}"
+    except jsonschema.ValidationError as e:
+        return False, e.message
+    except jsonschema.SchemaError as e:
+        return False, f"Schema error: {e.message}"
