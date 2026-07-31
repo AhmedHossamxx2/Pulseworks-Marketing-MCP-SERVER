@@ -122,5 +122,22 @@ async def publish_ad_creative(ad_id: int, ctx: Context) -> dict:
     }
 
 
+from pathlib import Path
+from server import mcp  
+
+BASE_DIR = Path(__file__).resolve().parent
+
+@mcp.resource("guidelines://brand_safety")
+def get_brand_safety_guidelines() -> str:
+    """
+    Exposes the read-only Pulseworks Brand Safety Guidelines to the AI Agent.
+    """
+    guidelines_path = BASE_DIR / "resources" / "brand_safety_guidelines.md"
+    if not guidelines_path.exists():
+        return "Brand safety guidelines document is currently unavailable."
+    
+    return guidelines_path.read_text(encoding="utf-8")
+
+
 if __name__ == "__main__":
     mcp.run()
