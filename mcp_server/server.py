@@ -125,9 +125,13 @@ register_defensive_tools(mcp)
 # Transport & Entry Point
 # ------------------------------------------------------------------------------
 def main():
-    """Main execution function for uv / pyproject.toml scripts."""
-    mcp.run()
-
+    # Transitioning from local stdio to Streamable HTTP / SSE transport (Issue #9)
+    # Allows remote team agents and client sessions to connect over HTTP on port 8000
+    mcp.run(
+        transport="sse",
+        host="0.0.0.0",
+        port=8000
+    )
 
 if __name__ == "__main__":
     main()
