@@ -25,7 +25,7 @@ class Config:
         "MCP_SERVER_COMMAND", "python ../mcp_server/server.py"
     )
     MCP_SERVER_HTTP_URL = os.getenv(
-        "MCP_SERVER_HTTP_URL", "http://localhost:8000/mcp"
+        "MCP_SERVER_HTTP_URL", "http://localhost:8000/sse"
     )
 
     @classmethod
