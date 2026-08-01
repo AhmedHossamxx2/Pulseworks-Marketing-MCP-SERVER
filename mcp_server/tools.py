@@ -20,16 +20,12 @@ async def request_budget_update(
     ctx: Context = None
 ) -> dict:
 
-    # Assemble payload for schema validation
     payload = {
         "campaign_id": campaign_id,
         "new_daily_limit": new_daily_limit,
         "currency": currency
     }
 
-    # ----------------------------------------------------------------------
-    # LAYER 1: Defensive JSON Schema Validation
-    # ----------------------------------------------------------------------
     is_valid, schema_error = validate_budget_update_payload(payload)
 
     if not is_valid:
@@ -40,9 +36,6 @@ async def request_budget_update(
             "reason": schema_error
         }
 
-    # ----------------------------------------------------------------------
-    # LAYER 2: Handler-Level Authorization Check
-    # ----------------------------------------------------------------------
     from server import session_state
     active_role = session_state.get("emp_role_in_campaign", "Viewer")
 
@@ -54,9 +47,6 @@ async def request_budget_update(
             "reason": f"Role '{active_role}' is not authorized to alter campaign budgets. Required role: 'Director'."
         }
 
-    # ----------------------------------------------------------------------
-    # LAYER 3: Independent Database State Validation (MySQL)
-    # ----------------------------------------------------------------------
     try:
         with get_db() as conn:
             cursor = conn.cursor(dictionary=True)
@@ -214,11 +204,70 @@ async def analyze_ad_performance_and_recommend(
 
 
 # ----------------------------------------------------------------------
+# 4. ELICITATION TOOL 
+# ----------------------------------------------------------------------
+async def publish_creative(
+    campaign_id: int,
+    creative_text: str,
+    ctx: Context = None
+) -> dict:
+
+    from server import session_state
+    role = session_state.get("emp_role_in_campaign", "Viewer")
+
+    if role != "Director":
+        return {
+            "status": "REJECTED_UNAUTHORIZED",
+            "reason": "Only Director can publish creatives"
+        }
+
+    # ✅ MCP Elicitation (Human Approval)
+    if ctx and hasattr(ctx, "elicitation"):
+        try:
+            approval = await ctx.elicitation.create(
+                message=f"Approve publishing this creative?\n\n{creative_text}"
+            )
+
+            if not approval:
+                return {
+                    "status": "CANCELLED",
+                    "reason": "User rejected publishing"
+                }
+
+        except Exception as e:
+            logger.error(f"Elicitation failed: {e}")
+            return {
+                "status": "ERROR_ELICITATION_FAILED",
+                "reason": str(e)
+            }
+
+    # تنفيذ بعد الموافقة
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE Campaigns SET status='active' WHERE campaign_id=%s",
+                (campaign_id,)
+            )
+            conn.commit()
+
+        return {
+            "status": "SUCCESS",
+            "message": "Creative published successfully"
+        }
+
+    except Exception as db_err:
+        return {
+            "status": "ERROR_DB",
+            "reason": str(db_err)
+        }
+
+
+# ----------------------------------------------------------------------
 # REGISTRATION FUNCTION
 # ----------------------------------------------------------------------
 def register_defensive_tools(mcp: FastMCP):
-    """Registers all module-level tools onto the FastMCP server instance."""
-    
+
     mcp.tool(
         name="request_budget_update",
         description="Validates, authorizes, and registers a campaign budget update using strict defensive schemas."
@@ -233,3 +282,9 @@ def register_defensive_tools(mcp: FastMCP):
         name="analyze_ad_performance_and_recommend",
         description="Fetches campaign metrics from MySQL and invokes LLM sampling to generate strategic recommendations."
     )(analyze_ad_performance_and_recommend)
+
+    # ✅ تسجيل elicitation tool
+    mcp.tool(
+        name="publish_creative",
+        description="Publishes ad creative after human approval via MCP elicitation."
+    )(publish_creative)
