@@ -52,29 +52,36 @@ def get_injected_tools(ctx: Optional[Any] = None) -> List[Any]:
     @tool("pull_audience_demographics")
     async def pull_audience_demographics_mcp(segment_id: str, sample_size: int = 1000):
         """Fetches audience demographic data with progress tracking."""
+        # Check if ctx is an MCP ClientSession or FastMCP Context
+        if hasattr(ctx, "call_tool"):
+            res = await ctx.call_tool("pull_audience_demographics", {"segment_id": segment_id, "sample_size": sample_size})
+            return res.content
         return await pull_audience_demographics(segment_id=segment_id, sample_size=sample_size, ctx=ctx)
 
     @tool("analyze_ad_performance_and_recommend")
     async def analyze_ad_performance_and_recommend_mcp(campaign_id: int):
         """Analyzes campaign performance and invokes sampling for recommendations."""
+        if hasattr(ctx, "call_tool"):
+            res = await ctx.call_tool("analyze_ad_performance_and_recommend", {"campaign_id": campaign_id})
+            return res.content
         return await analyze_ad_performance_and_recommend(campaign_id=campaign_id, ctx=ctx)
 
     @tool("request_budget_update")
     async def request_budget_update_mcp(campaign_id: int, new_daily_limit: float, currency: str = "USD"):
         """Validates and requests campaign budget updates through defensive guardrails."""
-        return await request_budget_update(
-            campaign_id=campaign_id,
-            new_daily_limit=new_daily_limit,
-            currency=currency,
-            ctx=ctx
-        )
+        if hasattr(ctx, "call_tool"):
+            res = await ctx.call_tool(
+                "request_budget_update", 
+                {"campaign_id": campaign_id, "new_daily_limit": new_daily_limit, "currency": currency}
+            )
+            return res.content
+        return await request_budget_update(campaign_id=campaign_id, new_daily_limit=new_daily_limit, currency=currency, ctx=ctx)
 
     return [
         pull_audience_demographics_mcp,
         analyze_ad_performance_and_recommend_mcp,
         request_budget_update_mcp
     ]
-
 
 # ======================================================
 # MAIN AGENT EXECUTION LOOP
